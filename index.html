@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <title>Lens Simulator</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;500&display=swap');
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      width: 100vw; height: 100vh;
+      overflow: hidden;
+      background: #000;
+      font-family: 'DM Mono', monospace;
+      /* Prevent rubber-band scroll on iOS */
+      position: fixed;
+      overscroll-behavior: none;
+    }
+
+    #video {
+      position: fixed;
+      opacity: 0; pointer-events: none;
+      width: 1px; height: 1px;
+    }
+
+    #bgCanvas {
+      position: fixed; inset: 0;
+      width: 100vw; height: 100vh;
+      display: block;
+      z-index: 0;
+    }
+
+    #c {
+      position: fixed; inset: 0;
+      width: 100vw; height: 100vh;
+      display: block;
+      z-index: 1;
+      /* Prevent touch passthrough interfering */
+      touch-action: none;
+      pointer-events: none;
+    }
+
+    /* ── Controls ── */
+    .controls {
+      position: fixed;
+      bottom: 0; left: 0; right: 0;
+      z-index: 20;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
+      padding: 14px 10vw 30px;
+      /* Extra bottom padding for phones with home bar */
+      padding-bottom: max(30px, env(safe-area-inset-bottom, 30px));
+      background: linear-gradient(to top, rgba(0,0,0,0.92) 70%, transparent);
+      touch-action: none;
+    }
+
+    /* Camera flip button — top right */
+    #flipBtn {
+      position: fixed;
+      top: max(16px, env(safe-area-inset-top, 16px));
+      right: 16px;
+      z-index: 30;
+      width: 44px; height: 44px;
+      border-radius: 50%;
+      background: rgba(0,0,0,0.45);
+      border: 1px solid rgba(255,255,255,0.25);
+      color: #fff;
+      font-size: 20px;
+      display: flex; align-items: center; justify-content: center;
+      cursor: pointer;
+      /* Large tap target */
+      -webkit-tap-highlight-color: transparent;
+      transition: background .15s;
+    }
+    #flipBtn:active { background: rgba(255,255,255,0.18); }
+
+    .row {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      width: 100%;
+      max-width: 600px;
+    }
+
+    .btn-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      width: 100%;
+      max-width: 600px;
+      padding-left: 54px;
+      padding-right: 42px;
+    }
+
+    .preset-btn {
+      flex: 1;
+      /* Larger tap target */
+      padding: 10px 0;
+      background: rgba(255,255,255,0.07);
+      border: 1px solid rgba(255,255,255,0.13);
+      border-radius: 4px;
+      color: rgba(255,255,255,0.45);
+      font-family: 'DM Mono', monospace;
+      font-size: 8px;
+      letter-spacing: 0.5px;
+      cursor: pointer;
+      transition: all .15s;
+      white-space: nowrap;
+      -webkit-tap-highlight-color: transparent;
+      touch-action: manipulation;
+    }
+    .preset-btn:hover  { background: rgba(255,255,255,0.14); border-color: rgba(255,255,255,0.3);  color: rgba(255,255,255,0.85); }
+    .preset-btn.active { background: rgba(255,255,255,0.22); border-color: rgba(255,255,255,0.55); color: #fff; }
+
+    .lbl {
+      font-size: 9px;
+      letter-spacing: 2.5px;
+      color: rgba(255,255,255,0.35);
+      width: 40px;
+      flex-shrink: 0;
+    }
+
+    /* ── Range slider — larger thumb for touch ── */
+    input[type=range] {
+      -webkit-appearance: none;
+      appearance: none;
+      flex: 1;
+      height: 4px;               /* slightly thicker track — easier to see on mobile */
+      background: rgba(255,255,255,0.15);
+      border-radius: 4px;
+      outline: none;
+      cursor: pointer;
+      touch-action: none;        /* let JS handle touch — prevents scroll conflict */
+      -webkit-tap-highlight-color: transparent;
+    }
+    input[type=range]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 28px; height: 28px; /* bigger for fingers */
+      border-radius: 50%;
+      background: #fff;
+      box-shadow: 0 0 0 4px rgba(255,255,255,0.1), 0 2px 12px rgba(0,0,0,0.6);
+      cursor: pointer;
+      transition: transform .1s;
+    }
+    input[type=range]:active::-webkit-slider-thumb { transform: scale(1.18); }
+    input[type=range]::-moz-range-thumb {
+      width: 28px; height: 28px;
+      border-radius: 50%;
+      background: #fff; border: none;
+      cursor: pointer;
+    }
+
+    .val {
+      font-size: 9px;
+      color: rgba(255,255,255,0.22);
+      width: 28px;
+      text-align: right;
+      flex-shrink: 0;
+    }
+
+    /* ── Permission overlay ── */
+    #perm {
+      position: fixed; inset: 0;
+      background: #000; z-index: 100;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      gap: 14px;
+      color: rgba(255,255,255,0.4);
+      font-size: 11px; letter-spacing: 2px;
+    }
+    #perm button {
+      margin-top: 10px;
+      /* Larger tap target */
+      padding: 16px 36px;
+      background: transparent;
+      border: 1px solid rgba(255,255,255,0.18);
+      border-radius: 3px;
+      color: rgba(255,255,255,0.55);
+      font-family: 'DM Mono', monospace;
+      font-size: 10px; letter-spacing: 2.5px;
+      cursor: pointer; transition: all .2s;
+      -webkit-tap-highlight-color: transparent;
+      touch-action: manipulation;
+    }
+    #perm button:hover {
+      background: rgba(255,255,255,0.06);
+      border-color: rgba(255,255,255,0.35);
+      color: rgba(255,255,255,0.85);
+    }
+  </style>
+</head>
+<body>
+
+<video id="video" autoplay playsinline muted></video>
+<canvas id="bgCanvas"></canvas>
+<canvas id="c"></canvas>
+
+<!-- Camera flip button -->
+<button id="flipBtn" title="Flip camera">⟳</button>
+
+<div class="controls">
+  <div class="btn-row" id="btnRow"></div>
+
+  <div class="row">
+    <div class="lbl">WIDTH</div>
+    <input id="sWidth" type="range" min="0.45" max="1" step="0.01" value="0.45">
+    <div class="val" id="vWidth">0.45</div>
+  </div>
+
+  <div class="row">
+    <div class="lbl">BLUR</div>
+    <input id="sBlur" type="range" min="0" max="10" step="0.1" value="0">
+    <div class="val" id="vBlur">0.0</div>
+  </div>
+</div>
+
+<div id="perm">
+  <div style="font-size:32px;opacity:.2">◉</div>
+  <div>Camera access required</div>
+  <button id="startBtn">ALLOW CAMERA</button>
+</div>
+
+<script>
+  const video    = document.getElementById('video');
+  const bgCanvas = document.getElementById('bgCanvas');
+  const bgCtx    = bgCanvas.getContext('2d');
+  const canvas   = document.getElementById('c');
+  const ctx      = canvas.getContext('2d');
+  const perm     = document.getElementById('perm');
+  const flipBtn  = document.getElementById('flipBtn');
+
+  const sWidth = document.getElementById('sWidth');
+  const sBlur  = document.getElementById('sBlur');
+  const vWidth = document.getElementById('vWidth');
+  const vBlur  = document.getElementById('vBlur');
+
+  // ── Camera facing state ────────────────────────────────────────────────────
+  let facingMode = 'environment'; // start with back camera
+  let currentStream = null;
+
+  // ── Slider value display ───────────────────────────────────────────────────
+  sBlur.addEventListener('input', () => { vBlur.textContent = parseFloat(sBlur.value).toFixed(1); });
+
+  // ── Button stops ───────────────────────────────────────────────────────────
+  const BTN_START = 0.45;
+  const BTN_STOPS = Array.from({ length: 8 }, (_, i) =>
+    BTN_START + i * ((1.0 - BTN_START) / 7)
+  );
+
+  sWidth.value = BTN_STOPS[0];
+  vWidth.textContent = BTN_STOPS[0].toFixed(2);
+
+  let allBtns = [];
+
+  function syncButtonHighlight(val) {
+    let closestIdx = 0, closestDist = Infinity;
+    BTN_STOPS.forEach((stop, idx) => {
+      const d = Math.abs(stop - val);
+      if (d < closestDist) { closestDist = d; closestIdx = idx; }
+    });
+    allBtns.forEach((b, idx) => b.classList.toggle('active', idx === closestIdx));
+  }
+
+  sWidth.addEventListener('input', () => {
+    const val = parseFloat(sWidth.value);
+    vWidth.textContent = val.toFixed(2);
+    syncButtonHighlight(val);
+  });
+
+  const btnRow = document.getElementById('btnRow');
+  for (let i = 0; i < 8; i++) {
+    const btn = document.createElement('button');
+    btn.className = 'preset-btn';
+    btn.textContent = `BTN ${i + 1}`;
+    btn.addEventListener('click',       () => setStop(i));
+    btn.addEventListener('touchend', e => { e.preventDefault(); setStop(i); });
+    btnRow.appendChild(btn);
+    allBtns.push(btn);
+  }
+
+  function setStop(i) {
+    const v = BTN_STOPS[i];
+    sWidth.value = v;
+    vWidth.textContent = v.toFixed(2);
+    syncButtonHighlight(v);
+  }
+
+  syncButtonHighlight(BTN_STOPS[0]);
+
+  // ──────────────────────────────────────────────────────────────────────────
+  //  TOUCH SLIDER FIX
+  //
+  //  iOS Safari doesn't fire 'input' events reliably on range inputs during
+  //  touch. We manually track touch position → map to slider value.
+  // ──────────────────────────────────────────────────────────────────────────
+  function addTouchSlider(slider, onUpdate) {
+    function getValFromTouch(e) {
+      const touch = e.touches[0] || e.changedTouches[0];
+      const rect  = slider.getBoundingClientRect();
+      const ratio = Math.min(1, Math.max(0, (touch.clientX - rect.left) / rect.width));
+      const min   = parseFloat(slider.min);
+      const max   = parseFloat(slider.max);
+      const step  = parseFloat(slider.step) || 0.01;
+      const raw   = min + ratio * (max - min);
+      // Snap to step
+      const snapped = Math.round(raw / step) * step;
+      return Math.min(max, Math.max(min, parseFloat(snapped.toFixed(10))));
+    }
+
+    slider.addEventListener('touchstart', e => {
+      e.stopPropagation();
+      slider.value = getValFromTouch(e);
+      onUpdate(parseFloat(slider.value));
+    }, { passive: true });
+
+    slider.addEventListener('touchmove', e => {
+      e.preventDefault();
+      e.stopPropagation();
+      slider.value = getValFromTouch(e);
+      onUpdate(parseFloat(slider.value));
+    }, { passive: false });
+
+    slider.addEventListener('touchend', e => {
+      e.stopPropagation();
+      onUpdate(parseFloat(slider.value));
+    }, { passive: true });
+  }
+
+  addTouchSlider(sWidth, val => {
+    vWidth.textContent = val.toFixed(2);
+    syncButtonHighlight(val);
+  });
+
+  addTouchSlider(sBlur, val => {
+    vBlur.textContent = val.toFixed(1);
+  });
+
+  // ── Offscreen canvas ───────────────────────────────────────────────────────
+  const offBlur = document.createElement('canvas');
+
+  function resize() {
+    bgCanvas.width = canvas.width   = window.innerWidth;
+    bgCanvas.height = canvas.height = window.innerHeight;
+    offBlur.width  = window.innerWidth;
+    offBlur.height = window.innerHeight;
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // ── Camera ─────────────────────────────────────────────────────────────────
+  async function startCamera(facing) {
+    // Stop existing stream first
+    if (currentStream) {
+      currentStream.getTracks().forEach(t => t.stop());
+      currentStream = null;
+    }
+
+    const constraints = {
+      video: {
+        facingMode: { ideal: facing },
+        width:  { ideal: 1920 },
+        height: { ideal: 1080 },
+      }
+    };
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      currentStream   = stream;
+      video.srcObject = stream;
+      await video.play();
+      perm.style.display = 'none';
+      flipBtn.style.display = 'flex';
+      if (!renderStarted) { renderStarted = true; requestAnimationFrame(render); }
+    } catch (err) {
+      // If ideal facing not available, try without constraint
+      try {
+        const fallback = await navigator.mediaDevices.getUserMedia({ video: true });
+        currentStream   = fallback;
+        video.srcObject = fallback;
+        await video.play();
+        perm.style.display = 'none';
+        flipBtn.style.display = 'flex';
+        if (!renderStarted) { renderStarted = true; requestAnimationFrame(render); }
+      } catch {
+        perm.innerHTML =
+          '<div style="opacity:.2;font-size:28px">⊗</div>' +
+          '<div style="color:rgba(255,255,255,0.25)">Camera unavailable</div>';
+      }
+    }
+  }
+
+  let renderStarted = false;
+  flipBtn.style.display = 'none'; // hidden until camera starts
+
+  document.getElementById('startBtn').addEventListener('click',    () => startCamera(facingMode));
+  document.getElementById('startBtn').addEventListener('touchend', e => { e.preventDefault(); startCamera(facingMode); });
+
+  // Flip button — toggle front/back
+  function flipCamera() {
+    facingMode = facingMode === 'environment' ? 'user' : 'environment';
+    startCamera(facingMode);
+  }
+  flipBtn.addEventListener('click',    flipCamera);
+  flipBtn.addEventListener('touchend', e => { e.preventDefault(); flipCamera(); });
+
+  // Auto-try camera on load
+  startCamera(facingMode);
+
+  // ── D-shape paths ──────────────────────────────────────────────────────────
+  function leftLensPath(R, cY) {
+    const path = new Path2D();
+    path.moveTo(0, cY - R);
+    path.arc(0, cY, R, -Math.PI / 2, Math.PI / 2);
+    path.lineTo(0, cY - R);
+    path.closePath();
+    return path;
+  }
+
+  function rightLensPath(W, R, cY) {
+    const path = new Path2D();
+    path.moveTo(W, cY - R);
+    path.arc(W, cY, R, -Math.PI / 2, Math.PI / 2, true);
+    path.lineTo(W, cY - R);
+    path.closePath();
+    return path;
+  }
+
+  // ── Render ─────────────────────────────────────────────────────────────────
+  function render() {
+    requestAnimationFrame(render);
+    if (!video.videoWidth) return;
+
+    const W = canvas.width;
+    const H = canvas.height;
+
+    const widthVal = parseFloat(sWidth.value);
+    const blur     = parseFloat(sBlur.value);
+
+    const MIN_R = H * 0.08;
+    const MAX_R = W * 0.46;
+    const R     = MIN_R + widthVal * (MAX_R - MIN_R);
+    const cY    = H * 0.74;
+
+    const lPath = leftLensPath(R, cY);
+    const rPath = rightLensPath(W, R, cY);
+
+    // 1. Full-screen camera background
+    bgCtx.drawImage(video, 0, 0, W, H);
+
+    // 2. Clear overlay
+    ctx.clearRect(0, 0, W, H);
+
+    // 3. Blur inside D-shapes
+    if (blur > 0) {
+      const oc = offBlur.getContext('2d');
+      oc.clearRect(0, 0, W, H);
+      oc.filter = `blur(${blur * 4}px)`;
+      oc.drawImage(video, 0, 0, W, H);
+      oc.filter = 'none';
+
+      ctx.save(); ctx.clip(lPath); ctx.drawImage(offBlur, 0, 0); ctx.restore();
+      ctx.save(); ctx.clip(rPath); ctx.drawImage(offBlur, 0, 0); ctx.restore();
+    }
+
+    // 4. Rim outlines
+    const rimW = Math.max(2, W * 0.003);
+
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+    ctx.lineWidth = rimW * 9;
+    ctx.stroke(lPath); ctx.stroke(rPath);
+    ctx.restore();
+
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255,255,255,0.88)';
+    ctx.lineWidth = rimW;
+    ctx.shadowColor = 'rgba(0,0,0,0.9)';
+    ctx.shadowBlur = 14;
+    ctx.stroke(lPath); ctx.stroke(rPath);
+    ctx.restore();
+
+    const rimInnerL = leftLensPath(R - rimW, cY);
+    const rimInnerR = rightLensPath(W, R - rimW, cY);
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255,255,255,0.07)';
+    ctx.lineWidth = rimW * 0.6;
+    ctx.stroke(rimInnerL); ctx.stroke(rimInnerR);
+    ctx.restore();
+  }
+</script>
+</body>
+</html>
